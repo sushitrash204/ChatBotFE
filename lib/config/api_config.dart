@@ -3,6 +3,7 @@ class ApiConfig {
   // For web (Chrome): use localhost or 127.0.0.1
   // For mobile: use your computer's IP (run 'ipconfig' to find it)
   static const String baseUrl = 'https://chatbotbe-sjk6.onrender.com'; // Live Render backend
+  // static const String baseUrl = 'http://192.168.1.5:5000'; // Computer's LAN IP for mobile testing
   
   // API Endpoints
   static const String apiChat = '/api/chat';

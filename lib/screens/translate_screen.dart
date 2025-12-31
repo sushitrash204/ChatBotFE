@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:camera/camera.dart'; // Import Camera
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../services/translate_service.dart';
 import '../services/auth_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/theme_provider.dart';
+import 'package:lamp_flutter_app/l10n/app_localizations.dart';
 import 'login_screen.dart';
 
 class TranslateScreen extends StatefulWidget {
@@ -172,12 +175,19 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
     setState(() => _isLoading = true);
 
     try {
-      // OCR
-      final ocrText = await _translateService.extractTextFromImage(imageFile);
-      setState(() => _ocrController.text = ocrText);
+      // --- CLIENT-SIDE OCR (ML Kit) ---
+      final inputImage = InputImage.fromFilePath(imageFile.path);
+      final textRecognizer = TextRecognizer();
+      
+      final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+      final ocrText = recognizedText.text.trim();
+      
+      textRecognizer.close();
+      
+      setState(() => _ocrController.text = ocrText.isNotEmpty ? ocrText : AppLocalizations.of(context)!.noSpeechDetected); // Reusing 'No speech detected' as placeholder or add 'No text detected'
 
       // Auto-translate
-      if (ocrText.isNotEmpty && ocrText != 'No text detected') {
+      if (ocrText.isNotEmpty) {
         final translated = await _translateService.translateText(
           ocrText,
           targetLang: _targetLang,
@@ -200,13 +210,17 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
   @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context);
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
     final isLoggedIn = authProvider.isLoggedIn;
+
+    final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
-      backgroundColor: const Color(0xFF15161A),
+      backgroundColor: currentTheme.backgroundColor,
       appBar: AppBar(
-        title: const Text('📷 Translate', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
+        title: Text(l10n.translate, style: TextStyle(fontWeight: FontWeight.w600, color: currentTheme.textColor)),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -227,11 +241,11 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
           children: [
             // Tabs
             Container(
-              color: const Color(0xFF202123),
+              color: currentTheme.cardColor,
               child: Row(
                 children: [
-                  Expanded(child: _buildTab('Text', 0)),
-                  Expanded(child: _buildTab('Image', 1)),
+                  Expanded(child: _buildTab(l10n.text, 0)),
+                  Expanded(child: _buildTab(l10n.image, 1)),
                 ],
               ),
             ),
@@ -247,6 +261,7 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
   }
 
   Widget _buildTab(String label, int index) {
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
     final isActive = _currentTab == index;
     return GestureDetector(
       onTap: () {
@@ -261,7 +276,7 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
-              color: isActive ? const Color(0xFF667EEA) : Colors.transparent,
+              color: isActive ? currentTheme.primaryColor : Colors.transparent,
               width: 2,
             ),
           ),
@@ -270,7 +285,7 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
           label,
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: isActive ? const Color(0xFF667EEA) : Colors.grey,
+            color: isActive ? currentTheme.primaryColor : currentTheme.secondaryTextColor,
             fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
           ),
         ),
@@ -279,7 +294,7 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
   }
 
   Widget _buildTextTab() {
-    // ... (This part remains mostly unchanged, just reusing the previous logic for brevity in tool output, but ensures complete file consistency)
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -287,17 +302,17 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: const Color(0xFF2D2F33),
+              color: currentTheme.cardColor,
               borderRadius: BorderRadius.circular(10),
             ),
             child: TextField(
               controller: _sourceController,
-              decoration: const InputDecoration(
-                hintText: 'Enter text to translate...',
-                hintStyle: TextStyle(color: Colors.grey),
+              decoration: InputDecoration(
+                hintText: AppLocalizations.of(context)!.enterTextToTranslate,
+                hintStyle: TextStyle(color: currentTheme.secondaryTextColor),
                 border: InputBorder.none,
               ),
-              style: const TextStyle(color: Colors.white, fontSize: 16),
+              style: TextStyle(color: currentTheme.textColor, fontSize: 16),
               maxLines: 5,
               onChanged: (_) => _translateText(),
             ),
@@ -308,24 +323,24 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
                Column(children: [
-                   const Text('From:', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                   Text(AppLocalizations.of(context)!.from, style: TextStyle(color: currentTheme.secondaryTextColor, fontSize: 12)),
                    DropdownButton<String>(
                      value: _sourceLang,
-                     dropdownColor: const Color(0xFF2D2F33),
-                     style: const TextStyle(color: Colors.white),
+                     dropdownColor: currentTheme.cardColor,
+                     style: TextStyle(color: currentTheme.textColor),
                      items: ['auto', 'vi', 'en', 'ja', 'ko', 'zh-CN'].map((lang) => DropdownMenuItem(value: lang, child: Text(lang))).toList(),
                      onChanged: (val) { setState(() => _sourceLang = val!); _translateText(); },
                    )
                ]),
                const SizedBox(width: 16),
-               const Icon(Icons.arrow_forward, color: Colors.grey),
+               Icon(Icons.arrow_forward, color: currentTheme.secondaryTextColor),
                const SizedBox(width: 16),
                Column(children: [
-                   const Text('To:', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                   Text(AppLocalizations.of(context)!.to, style: TextStyle(color: currentTheme.secondaryTextColor, fontSize: 12)),
                    DropdownButton<String>(
                      value: _targetLang,
-                     dropdownColor: const Color(0xFF2D2F33),
-                     style: const TextStyle(color: Colors.white),
+                     dropdownColor: currentTheme.cardColor,
+                     style: TextStyle(color: currentTheme.textColor),
                      items: ['vi', 'en', 'ja', 'ko', 'zh-CN'].map((lang) => DropdownMenuItem(value: lang, child: Text(lang))).toList(),
                      onChanged: (val) { setState(() => _targetLang = val!); _translateText(); },
                    )
@@ -336,28 +351,29 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: const Color(0xFF202123),
+              color: currentTheme.cardColor,
               borderRadius: BorderRadius.circular(10),
             ),
             child: TextField(
               controller: _targetController,
-              decoration: const InputDecoration(
-                hintText: 'Translation...',
-                hintStyle: TextStyle(color: Colors.grey),
+              decoration: InputDecoration(
+                hintText: AppLocalizations.of(context)!.translation,
+                hintStyle: TextStyle(color: currentTheme.secondaryTextColor),
                 border: InputBorder.none,
               ),
-              style: const TextStyle(color: Colors.white, fontSize: 16),
+              style: TextStyle(color: currentTheme.textColor, fontSize: 16),
               maxLines: 5,
               readOnly: true,
             ),
           ),
-          if (_isLoading) const Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()),
+          if (_isLoading) Padding(padding: const EdgeInsets.all(16), child: CircularProgressIndicator()),
         ],
       ),
     );
   }
 
   Widget _buildImageTab() {
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
     // 1. Show Result if available (Prioritize this over Camera Init)
     if (_ocrController.text.isNotEmpty) {
         return SingleChildScrollView(
@@ -369,7 +385,7 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
                         alignment: Alignment.centerLeft,
                         child: TextButton.icon(
                             icon: const Icon(Icons.arrow_back),
-                            label: const Text("Scan Another"),
+                            label: Text(AppLocalizations.of(context)!.scanAnother),
                             onPressed: () {
                                 setState(() {
                                     _ocrController.clear();
@@ -382,29 +398,29 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
                      Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                            color: const Color(0xFF2D2F33),
+                            color: currentTheme.cardColor,
                             borderRadius: BorderRadius.circular(10),
                         ),
                         child: TextField(
                             controller: _ocrController,
-                            style: const TextStyle(color: Colors.white),
+                            style: TextStyle(color: currentTheme.textColor),
                             maxLines: null,
-                            decoration: const InputDecoration(labelText: 'Detected Text', border: InputBorder.none),
+                            decoration: InputDecoration(labelText: AppLocalizations.of(context)!.detectedText, border: InputBorder.none),
                         ),
                     ),
                     const SizedBox(height: 16),
                     Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                            color: const Color(0xFF202123), // Darker for output
+                            color: currentTheme.cardColor, // Darker for output
                             borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFF667EEA).withOpacity(0.5))
+                            border: Border.all(color: currentTheme.primaryColor.withOpacity(0.5))
                         ),
                         child: TextField(
                             controller: _targetController,
-                            style: const TextStyle(color: Colors.white, fontSize: 16),
+                            style: TextStyle(color: currentTheme.textColor, fontSize: 16),
                             maxLines: null,
-                             decoration: const InputDecoration(labelText: 'Translation', border: InputBorder.none),
+                             decoration: InputDecoration(labelText: AppLocalizations.of(context)!.translation, border: InputBorder.none),
                             readOnly: true,
                         ),
                     ),
@@ -422,13 +438,13 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
                     if (_isLoading) ...[
                        const CircularProgressIndicator(),
                        const SizedBox(height: 20),
-                       const Text("Processing...", style: TextStyle(color: Colors.white)),
+                       Text(AppLocalizations.of(context)!.processing, style: TextStyle(color: currentTheme.textColor)),
                     ] else ...[
                        const Icon(Icons.videocam_off, size: 50, color: Colors.grey),
                        const SizedBox(height: 20),
-                       const Text("Camera not available", style: TextStyle(color: Colors.grey)),
+                       Text(AppLocalizations.of(context)!.cameraNotAvailable, style: const TextStyle(color: Colors.grey)),
                        const SizedBox(height: 10),
-                       const Text("(Check permissions or use Gallery)", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                       Text(AppLocalizations.of(context)!.checkPermissions, style: const TextStyle(color: Colors.grey, fontSize: 12)),
                     ],
                     const SizedBox(height: 30),
                     // Fallback to Gallery if camera fails
@@ -438,7 +454,7 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
                         onPressed: _pickImage,
                         style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            backgroundColor: const Color(0xFF667EEA),
+                            backgroundColor: currentTheme.primaryColor,
                             foregroundColor: Colors.white
                         ),
                     )
@@ -524,93 +540,31 @@ class _TranslateScreenState extends State<TranslateScreen> with WidgetsBindingOb
         if (_isLoading)
             Container(
                 color: Colors.black54,
-                child: const Center(child: CircularProgressIndicator()),
+                child: Center(child: CircularProgressIndicator()),
             )
       ],
     );
   }
 
-  // Gradient Login Button with Shimmer Effect
+  // Gradient Login Button (Standardized)
   Widget _buildGradientLoginButton() {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
     return AnimatedBuilder(
       animation: _shimmerController,
       builder: (context, _) {
-        final shimmerValue = _shimmerController.value;
-        final curvedValue = Curves.easeInOutCubic.transform(shimmerValue);
-        
+        final val = _shimmerController.value;
         return GestureDetector(
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => LoginScreen())),
           child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 8),
-            height: 44,
-            width: 110,
+            height: 36, width: 90,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(30),
-              gradient: const LinearGradient(
-                colors: [Color(0xFF448AFF), Color(0xFFFF1744)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Color.lerp(const Color(0xFF448AFF), const Color(0xFFFF1744), shimmerValue)!.withOpacity(0.5),
-                  blurRadius: 16,
-                  spreadRadius: 2,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              borderRadius: BorderRadius.circular(20),
+              gradient: currentTheme.gradient,
+              boxShadow: [BoxShadow(color: Color.lerp(currentTheme.primaryColor, currentTheme.accentColor, val)!.withOpacity(0.5), blurRadius: 10)],
             ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Transform.translate(
-                    offset: Offset((curvedValue * 3.5 - 1.2) * 110, 0),
-                    child: Container(
-                      width: 70,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Colors.white.withOpacity(0.0), Colors.white.withOpacity(0.6), Colors.white.withOpacity(0.0)],
-                          stops: const [0.0, 0.5, 1.0],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Transform.translate(
-                    offset: Offset((curvedValue * 3.5 - 1.5) * 110, 0),
-                    child: Container(
-                      width: 40,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Colors.white.withOpacity(0.0), Colors.white.withOpacity(0.3), Colors.white.withOpacity(0.0)],
-                          stops: const [0.0, 0.5, 1.0],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Text(
-                  'Login',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    letterSpacing: 1.0,
-                    shadows: [Shadow(color: Colors.black.withOpacity(0.3), offset: const Offset(0, 1), blurRadius: 2)],
-                  ),
-                ),
-              ],
-            ),
+            alignment: Alignment.center,
+            child: Text(AppLocalizations.of(context)!.login, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         );
       },

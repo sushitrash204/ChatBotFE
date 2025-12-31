@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/theme_provider.dart';
+import 'package:lamp_flutter_app/l10n/app_localizations.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -23,7 +25,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (username.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields')),
+        SnackBar(content: Text(AppLocalizations.of(context)!.pleaseFillAllFields)),
       );
       return;
     }
@@ -37,7 +39,7 @@ class _LoginScreenState extends State<LoginScreen> {
       
       if (result['success']) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Registration successful! Please login.')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.registrationSuccessMessage)),
         );
         setState(() => _isRegisterMode = false);
       } else {
@@ -59,7 +61,7 @@ class _LoginScreenState extends State<LoginScreen> {
           }
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Invalid username or password')),
+            SnackBar(content: Text(AppLocalizations.of(context)!.invalidLogin)),
           );
         }
       } catch (e) {
@@ -73,9 +75,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
+    final l10n = AppLocalizations.of(context)!;
     return Scaffold(
+      backgroundColor: currentTheme.backgroundColor,
       appBar: AppBar(
-        title: Text(_isRegisterMode ? 'Register' : 'Login'),
+        title: Text(_isRegisterMode ? l10n.register : l10n.login, style: TextStyle(color: currentTheme.textColor)),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        iconTheme: IconThemeData(color: currentTheme.textColor),
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -84,18 +92,17 @@ class _LoginScreenState extends State<LoginScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               // Logo/Title
-              const Icon(
-                Icons.lightbulb,
-                size: 80,
-                color: Color(0xFF667EEA),
+              Image.asset(
+                'assets/images/logo_no_background.png',
+                height: 120,
               ),
               const SizedBox(height: 16),
-              const Text(
-                'Lamp AI',
+              Text(
+                'ParrotAI',
                 style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.bold,
-                  color: Colors.white,
+                  color: currentTheme.textColor,
                 ),
               ),
               const SizedBox(height: 48),
@@ -104,24 +111,24 @@ class _LoginScreenState extends State<LoginScreen> {
               TextField(
                 controller: _usernameController,
                 decoration: InputDecoration(
-                  labelText: 'Username',
-                  labelStyle: const TextStyle(color: Colors.grey),
+                  labelText: l10n.username,
+                  labelStyle: TextStyle(color: currentTheme.secondaryTextColor),
                   filled: true,
-                  fillColor: const Color(0xFF2D2F33),
+                  fillColor: currentTheme.cardColor,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF444444)),
+                    borderSide: BorderSide(color: currentTheme.textColor.withOpacity(0.1)),
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF444444)),
+                    borderSide: BorderSide(color: currentTheme.textColor.withOpacity(0.1)),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF667EEA)),
+                    borderSide: BorderSide(color: currentTheme.primaryColor),
                   ),
                 ),
-                style: const TextStyle(color: Colors.white),
+                style: TextStyle(color: currentTheme.textColor),
               ),
               const SizedBox(height: 16),
 
@@ -130,24 +137,24 @@ class _LoginScreenState extends State<LoginScreen> {
                 controller: _passwordController,
                 obscureText: true,
                 decoration: InputDecoration(
-                  labelText: 'Password',
-                  labelStyle: const TextStyle(color: Colors.grey),
+                  labelText: l10n.password,
+                  labelStyle: TextStyle(color: currentTheme.secondaryTextColor),
                   filled: true,
-                  fillColor: const Color(0xFF2D2F33),
+                  fillColor: currentTheme.cardColor,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF444444)),
+                    borderSide: BorderSide(color: currentTheme.textColor.withOpacity(0.1)),
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF444444)),
+                    borderSide: BorderSide(color: currentTheme.textColor.withOpacity(0.1)),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFF667EEA)),
+                    borderSide: BorderSide(color: currentTheme.primaryColor),
                   ),
                 ),
-                style: const TextStyle(color: Colors.white),
+                style: TextStyle(color: currentTheme.textColor),
                 onSubmitted: (_) => _submit(),
               ),
               const SizedBox(height: 24),
@@ -159,7 +166,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _submit,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF667EEA),
+                    backgroundColor: currentTheme.primaryColor,
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
@@ -168,7 +175,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
                       : Text(
-                          _isRegisterMode ? 'Register' : 'Login',
+                          _isRegisterMode ? l10n.register : l10n.login,
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -186,9 +193,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 },
                 child: Text(
                   _isRegisterMode
-                      ? 'Already have an account? Login'
-                      : 'Don\'t have an account? Register',
-                  style: const TextStyle(color: Color(0xFF667EEA)),
+                      ? l10n.alreadyHaveAccount
+                      : l10n.needAccount,
+                  style: TextStyle(color: currentTheme.primaryColor),
                 ),
               ),
 
@@ -197,9 +204,9 @@ class _LoginScreenState extends State<LoginScreen> {
               // Skip button
               TextButton(
                 onPressed: () => Navigator.of(context).pop(false),
-                child: const Text(
-                  'Skip (use without login)',
-                  style: TextStyle(color: Colors.grey),
+                child: Text(
+                  l10n.skipLogin,
+                  style: TextStyle(color: currentTheme.secondaryTextColor),
                 ),
               ),
             ],

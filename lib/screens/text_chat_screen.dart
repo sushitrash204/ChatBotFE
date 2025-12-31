@@ -5,7 +5,12 @@ import '../models/conversation.dart';
 import '../services/chat_service.dart';
 import '../services/conversation_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/theme_provider.dart';
 import 'login_screen.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:lamp_flutter_app/l10n/app_localizations.dart';
+import 'settings_screen.dart';
 
 class TextChatScreen extends StatefulWidget {
   const TextChatScreen({super.key});
@@ -144,6 +149,71 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
     }
   }
 
+  // --- LOGIC: OCR (Image to Text) ---
+  Future<void> _pickImageAndExtractText() async {
+    final picker = ImagePicker();
+    final currentTheme = Provider.of<ThemeProvider>(context, listen: false).currentTheme;
+
+    // Show dialog to choose Camera or Gallery
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: currentTheme.backgroundColor,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: Icon(Icons.camera_alt, color: currentTheme.primaryColor),
+              title: Text('Camera', style: TextStyle(color: currentTheme.textColor)),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+            ListTile(
+              leading: Icon(Icons.photo_library, color: currentTheme.accentColor),
+              title: Text('Gallery', style: TextStyle(color: currentTheme.textColor)),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (source == null) return;
+
+    try {
+      final pickedFile = await picker.pickImage(source: source);
+      if (pickedFile == null) return;
+
+      setState(() => _isLoading = true);
+
+      final inputImage = InputImage.fromFilePath(pickedFile.path);
+      final textRecognizer = TextRecognizer();
+      final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+
+      String extractedText = recognizedText.text.trim();
+      await textRecognizer.close();
+
+      if (extractedText.isEmpty) {
+        extractedText = "[No text detected in image]";
+      } else {
+        extractedText = "[OCR Text]:\n$extractedText";
+      }
+
+      // Fill controller with extracted text so user can edit before sending
+      _controller.text = extractedText;
+      
+      setState(() => _isLoading = false);
+      
+    } catch (e) {
+      print('OCR Error: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to read image: $e')),
+        );
+      }
+    }
+  }
+
   // --- LOGIC: Send Message ---
   Future<void> _sendMessage() async {
     final text = _controller.text.trim();
@@ -237,18 +307,20 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
     });
   }
 
-  // --- UI ---
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final authProvider = Provider.of<AuthProvider>(context);
     final isLoggedIn = authProvider.isLoggedIn;
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
 
     return Scaffold(
       key: _scaffoldKey,
       extendBodyBehindAppBar: true,
-      backgroundColor: const Color(0xFF15161A),
+      backgroundColor: currentTheme.backgroundColor,
       appBar: AppBar(
-        title: const Text('💡 Lamp Text', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
+        title: Text(l10n.appTitle, style: TextStyle(fontWeight: FontWeight.w600, color: currentTheme.textColor)),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -261,7 +333,7 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
           IconButton(
             icon: Icon(
                 Icons.psychology, 
-                color: _showPersonality ? const Color(0xFF667EEA) : Colors.grey
+                color: _showPersonality ? currentTheme.primaryColor : currentTheme.secondaryTextColor
             ),
             onPressed: () => setState(() => _showPersonality = !_showPersonality),
             tooltip: 'AI Personality',
@@ -270,7 +342,7 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
             IconButton(
               icon: const Icon(Icons.add_circle_outline),
               onPressed: _newChat,
-              tooltip: 'New Chat',
+              tooltip: l10n.newChat,
             ),
           if (isLoggedIn)
              Padding(
@@ -302,22 +374,22 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
                 height: _showPersonality ? null : 0,
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF202123),
-                  border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.1)))
+                  color: currentTheme.cardColor,
+                  border: Border(bottom: BorderSide(color: currentTheme.textColor.withOpacity(0.1)))
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text("🤖 System Personality", style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold)),
+                    Text("🤖 System Personality", style: TextStyle(color: currentTheme.primaryColor, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     TextField(
-                      style: const TextStyle(color: Colors.white),
+                      style: TextStyle(color: currentTheme.textColor),
                       decoration: InputDecoration(
                         hintText: "E.g., You are a helpful coding assistant...",
-                        hintStyle: TextStyle(color: Colors.grey[600]),
+                        hintStyle: TextStyle(color: currentTheme.secondaryTextColor),
                         filled: true,
-                        fillColor: const Color(0xFF2D2F33),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        fillColor: currentTheme.backgroundColor.withOpacity(0.5),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: currentTheme.secondaryTextColor.withOpacity(0.1))),
                         contentPadding: const EdgeInsets.all(12)
                       ),
                       onChanged: (val) => _systemPrompt = val,
@@ -330,7 +402,7 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
             // Chat List
             Expanded(
               child: _isLoading && _messages.isEmpty
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF667EEA)))
+                ? Center(child: CircularProgressIndicator(color: currentTheme.primaryColor))
                 : _buildMessageList(),
             ),
           
@@ -352,19 +424,28 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
   }
 
   Widget _buildDrawer() {
+    final l10n = AppLocalizations.of(context)!;
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
     return Drawer(
-      backgroundColor: const Color(0xFF1A1B1E),
+      backgroundColor: currentTheme.backgroundColor,
       child: Column(
         children: [
           DrawerHeader(
-            decoration: const BoxDecoration(
-                gradient: LinearGradient(colors: [Color(0xFF667EEA), Color(0xFF764BA2)]),
+            decoration: BoxDecoration(
+                gradient: currentTheme.gradient,
             ),
-            child: const Center(child: Text('Chat History', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold))),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Image.asset('assets/images/logo_no_background.png', height: 60),
+                const SizedBox(height: 10),
+                Text(l10n.history, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              ],
+            ),
           ),
           ListTile(
-            leading: const Icon(Icons.add_circle, color: Colors.blueAccent),
-            title: const Text('New Chat', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            leading: Icon(Icons.add_circle, color: currentTheme.primaryColor),
+            title: Text(l10n.newChat, style: TextStyle(color: currentTheme.textColor, fontWeight: FontWeight.bold)),
             onTap: _newChat,
           ),
           Expanded(
@@ -375,11 +456,11 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
                 final isSelected = c.id == _currentConversationId;
                 return ListTile(
                   selected: isSelected,
-                  selectedTileColor: const Color(0xFF2D2F33),
+                  selectedTileColor: currentTheme.primaryColor.withOpacity(0.15),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  leading: Icon(Icons.chat_bubble_outline, color: isSelected ? const Color(0xFF667EEA) : Colors.grey),
-                  title: Text(c.title, style: TextStyle(color: isSelected ? Colors.white : Colors.grey, fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal)),
+                  leading: Icon(Icons.chat_bubble_outline, color: isSelected ? currentTheme.primaryColor : currentTheme.secondaryTextColor),
+                  title: Text(c.title, style: TextStyle(color: isSelected ? currentTheme.textColor : currentTheme.secondaryTextColor, fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal)),
                   onTap: () {
                      Navigator.pop(ctx); 
                      _selectConversation(c.id);
@@ -399,16 +480,17 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
 
   // REPLACED: Updated Message List with Animation Wrapper
   Widget _buildMessageList() {
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
     if (_messages.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.chat_bubble_outline_rounded, size: 80, color: Colors.grey[800]),
+            Icon(Icons.chat_bubble_outline_rounded, size: 80, color: currentTheme.secondaryTextColor.withOpacity(0.3)),
             const SizedBox(height: 16),
             Text(
               'Start a conversation',
-              style: TextStyle(color: Colors.grey[600], fontSize: 16),
+              style: TextStyle(color: currentTheme.secondaryTextColor, fontSize: 16),
             ),
           ],
         ),
@@ -433,12 +515,15 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
 
   // REPLACED: Modern Input Area
   Widget _buildInputArea() {
+    final l10n = AppLocalizations.of(context)!;
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF202123),
+        color: currentTheme.backgroundColor,
         boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 15, offset: const Offset(0, -5))
+            BoxShadow(color: Colors.black.withOpacity(currentTheme.isDark ? 0.3 : 0.1), blurRadius: 15, offset: const Offset(0, -5))
         ]
       ),
       child: Row(
@@ -446,35 +531,42 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
           Expanded(
             child: Container(
               decoration: BoxDecoration(
-                color: const Color(0xFF2D2F33),
+                color: currentTheme.cardColor,
                 borderRadius: BorderRadius.circular(25),
-                border: Border.all(color: Colors.white.withOpacity(0.08))
+                border: Border.all(color: currentTheme.secondaryTextColor.withOpacity(0.1))
               ),
-              child: TextField(
-                controller: _controller,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Type a message...',
-                  hintStyle: TextStyle(color: Colors.grey),
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                ),
-                minLines: 1,
-                maxLines: 4,
-                onSubmitted: (_) => _sendMessage(),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.camera_alt_rounded, color: currentTheme.secondaryTextColor),
+                    onPressed: _pickImageAndExtractText,
+                    tooltip: 'Scan Image (OCR)',
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      style: TextStyle(color: currentTheme.textColor),
+                      decoration: InputDecoration(
+                        hintText: l10n.typeAMessage,
+                        hintStyle: TextStyle(color: currentTheme.secondaryTextColor),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+                      ),
+                      minLines: 1,
+                      maxLines: 4,
+                      onSubmitted: (_) => _sendMessage(),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
           const SizedBox(width: 12),
           Container(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: LinearGradient(
-                    colors: [Color(0xFF667EEA), Color(0xFF764BA2)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight
-                ),
-                boxShadow: [BoxShadow(color: Color(0x66667EEA), blurRadius: 8, spreadRadius: 1)]
+                gradient: currentTheme.gradient,
+                boxShadow: [BoxShadow(color: currentTheme.primaryColor.withOpacity(0.3), blurRadius: 8, spreadRadius: 1)]
             ),
             child: IconButton(
                 icon: const Icon(Icons.send_rounded, color: Colors.white),
@@ -486,87 +578,25 @@ class _TextChatScreenState extends State<TextChatScreen> with TickerProviderStat
     );
   }
 
-  // Gradient Login Button with Shimmer Effect
+  // Gradient Login Button (Standardized)
   Widget _buildGradientLoginButton() {
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
     return AnimatedBuilder(
       animation: _shimmerController,
       builder: (context, _) {
-        final shimmerValue = _shimmerController.value;
-        final curvedValue = Curves.easeInOutCubic.transform(shimmerValue);
-        
+        final val = _shimmerController.value;
+        final l10n = AppLocalizations.of(context)!;
         return GestureDetector(
           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => LoginScreen())),
           child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 8),
-            height: 44,
-            width: 110,
+            height: 36, width: 90,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(30),
-              gradient: const LinearGradient(
-                colors: [Color(0xFF448AFF), Color(0xFFFF1744)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Color.lerp(const Color(0xFF448AFF), const Color(0xFFFF1744), shimmerValue)!.withOpacity(0.5),
-                  blurRadius: 16,
-                  spreadRadius: 2,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              borderRadius: BorderRadius.circular(20),
+              gradient: currentTheme.gradient,
+              boxShadow: [BoxShadow(color: Color.lerp(currentTheme.primaryColor, currentTheme.accentColor, val)!.withOpacity(0.5), blurRadius: 10)],
             ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Transform.translate(
-                    offset: Offset((curvedValue * 3.5 - 1.2) * 110, 0),
-                    child: Container(
-                      width: 70,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Colors.white.withOpacity(0.0), Colors.white.withOpacity(0.6), Colors.white.withOpacity(0.0)],
-                          stops: const [0.0, 0.5, 1.0],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Transform.translate(
-                    offset: Offset((curvedValue * 3.5 - 1.5) * 110, 0),
-                    child: Container(
-                      width: 40,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Colors.white.withOpacity(0.0), Colors.white.withOpacity(0.3), Colors.white.withOpacity(0.0)],
-                          stops: const [0.0, 0.5, 1.0],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Text(
-                  'Login',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    letterSpacing: 1.0,
-                    shadows: [Shadow(color: Colors.black.withOpacity(0.3), offset: const Offset(0, 1), blurRadius: 2)],
-                  ),
-                ),
-              ],
-            ),
+            alignment: Alignment.center,
+            child: Text(l10n.login, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         );
       },
@@ -617,6 +647,9 @@ class _AnimatedMessageBubbleState extends State<AnimatedMessageBubble> with Sing
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
     return SlideTransition(
       position: _offsetAnimation,
       child: FadeTransition(
@@ -630,9 +663,9 @@ class _AnimatedMessageBubbleState extends State<AnimatedMessageBubble> with Sing
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                         gradient: widget.isUser 
-                            ? const LinearGradient(colors: [Color(0xFF667EEA), Color(0xFF764BA2)]) // Premium User Gradient
+                            ? currentTheme.gradient
                             : null,
-                        color: widget.isUser ? null : const Color(0xFF2D2F33), // Dark AI Bg
+                        color: widget.isUser ? null : currentTheme.cardColor, // AI Bg
                         borderRadius: BorderRadius.only(
                             topLeft: const Radius.circular(20),
                             topRight: const Radius.circular(20),
@@ -641,7 +674,7 @@ class _AnimatedMessageBubbleState extends State<AnimatedMessageBubble> with Sing
                         ),
                         boxShadow: [
                             BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
+                                color: Colors.black.withOpacity(currentTheme.isDark ? 0.1 : 0.05),
                                 blurRadius: 4,
                                 offset: const Offset(0, 2)
                             )
@@ -652,11 +685,11 @@ class _AnimatedMessageBubbleState extends State<AnimatedMessageBubble> with Sing
                         children: [
                              // Role Label
                             Text(
-                                widget.isUser ? 'You' : 'AI Assistant',
+                                widget.isUser ? l10n.you : l10n.assistant,
                                 style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.bold,
-                                    color: widget.isUser ? Colors.white.withOpacity(0.7) : Colors.blueAccent.withOpacity(0.7),
+                                    color: widget.isUser ? Colors.white.withOpacity(0.8) : currentTheme.primaryColor.withOpacity(0.8),
                                     letterSpacing: 0.5
                                 ),
                             ),
@@ -664,8 +697,8 @@ class _AnimatedMessageBubbleState extends State<AnimatedMessageBubble> with Sing
                             // Message Content
                             Text(
                                 widget.message.text,
-                                style: const TextStyle(
-                                    color: Colors.white, 
+                                style: TextStyle(
+                                    color: widget.isUser ? Colors.white : currentTheme.textColor, 
                                     fontSize: 15, 
                                     height: 1.4
                                 ),
@@ -704,12 +737,14 @@ class _TypingIndicatorState extends State<TypingIndicator> with TickerProviderSt
 
   @override
   Widget build(BuildContext context) {
+    final currentTheme = Provider.of<ThemeProvider>(context).currentTheme;
+    final l10n = AppLocalizations.of(context)!;
       return Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-              color: const Color(0xFF2D2F33),
+              color: currentTheme.cardColor,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.white.withOpacity(0.05))
+              border: Border.all(color: currentTheme.secondaryTextColor.withOpacity(0.1))
           ),
           child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -719,7 +754,7 @@ class _TypingIndicatorState extends State<TypingIndicator> with TickerProviderSt
                       child: Container(
                           margin: const EdgeInsets.symmetric(horizontal: 2),
                           width: 8, height: 8,
-                          decoration: const BoxDecoration(color: Color(0xFF667EEA), shape: BoxShape.circle),
+                          decoration: BoxDecoration(color: currentTheme.primaryColor, shape: BoxShape.circle),
                       ),
                   );
               }),

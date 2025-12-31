@@ -78,4 +78,32 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_sessionKey);
   }
+
+  // Change Password
+  Future<Map<String, dynamic>> changePassword(String oldPassword, String newPassword) async {
+    try {
+      final token = await getSessionCookie();
+      if (token == null) return {'success': false, 'message': 'Unauthorized'};
+
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/api/change-password'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'old_password': oldPassword,
+          'new_password': newPassword,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+      return {
+        'success': data['success'] ?? false,
+        'message': data['message'] ?? data['error'] ?? 'Đã có lỗi xảy ra',
+      };
+    } catch (e) {
+      return {'success': false, 'message': 'Lỗi kết nối: $e'};
+    }
+  }
 }

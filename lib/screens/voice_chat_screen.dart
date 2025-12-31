@@ -1,16 +1,28 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter_sound/flutter_sound.dart';
+import 'package:flutter_sound/flutter_sound.dart'; // Audio Recorder & Player
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import '../config/api_config.dart';
+
+import '../utils/audio_helper.dart';
 import '../models/message.dart';
 import '../services/chat_service.dart';
 import '../services/auth_service.dart';
 import '../providers/auth_provider.dart';
+import '../providers/chat_provider.dart';
+import '../config/voice_config.dart';
+import '../providers/theme_provider.dart';
+import 'package:lamp_flutter_app/l10n/app_localizations.dart';
 import 'login_screen.dart';
+import 'settings_screen.dart';
 
 class VoiceChatScreen extends StatefulWidget {
   final Function(VoidCallback)? onNewChatRequested;
@@ -26,7 +38,10 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
   final FlutterSoundPlayer _player = FlutterSoundPlayer();
   final ChatService _chatService = ChatService();
   final AuthService _authService = AuthService();
+  final TextEditingController _textController = TextEditingController(); // Manual Input
   final List<Message> _messages = [];
+  final stt.SpeechToText _speechToText = stt.SpeechToText();
+  bool _sttInitialized = false;
 
   bool _isRecorderInitialized = false;
   bool _isPlayerInitialized = false;
@@ -34,26 +49,40 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
   bool _isPlaying = false;
   bool _isLoading = false;
   bool _isLoggedIn = false;
+  bool _showTextInput = false; // Toggle Text Input
+  
   String? _recordingPath;
-  String _userText = '';
-  String _aiText = '';
+  String _aiText = ''; 
+  final ScrollController _scrollController = ScrollController();
 
   // --- Animation Controllers ---
   late AnimationController _bgController;
   late AnimationController _pulseController;
   late AnimationController _waveController;
   late AnimationController _shimmerController;
-  late AnimationController _rippleController; // Dedicated controller for ripple
+  late AnimationController _rippleController;
 
   Offset _touchPosition = Offset.zero;
-  Color _touchColor = Colors.blue; // Random color for each touch
+  Color _touchColor = Colors.blue;
 
   void _newChat() {
+    final currentTheme = Provider.of<ThemeProvider>(context, listen: false).currentTheme;
     setState(() {
       _messages.clear();
-      _userText = '';
-      _aiText = '';
+      _aiText = AppLocalizations.of(context)!.conversationReset;
+      _textController.clear();
     });
+    
+    // Add visual feedback
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context)!.historyCleared, style: TextStyle(color: currentTheme.textColor)),
+          duration: const Duration(seconds: 2),
+          backgroundColor: currentTheme.cardColor,
+        ),
+      );
+    }
   }
 
   @override
@@ -61,6 +90,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
     super.initState();
     _initRecorder();
     _initPlayer();
+    _initSTT();
     _checkLogin();
     widget.onNewChatRequested?.call(_newChat);
 
@@ -84,23 +114,23 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
       duration: const Duration(milliseconds: 2500),
     )..repeat();
 
-    // Ripple controller - does NOT repeat, triggered manually
     _rippleController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 3500), // Slower fade-out
+      duration: const Duration(milliseconds: 3500),
     );
   }
 
   void _triggerRipple(Offset position) {
+    if (_showTextInput && position.dy > MediaQuery.of(context).size.height - 150) return; // Avoid ripple over text input
+
     final random = math.Random();
+    final currentTheme = Provider.of<ThemeProvider>(context, listen: false).currentTheme;
     setState(() {
       _touchPosition = position;
-      // Randomly pick between blue or red
       _touchColor = random.nextBool() 
-          ? const Color(0xFF448AFF) // Blue
-          : const Color(0xFFFF1744); // Red
+          ? currentTheme.primaryColor
+          : currentTheme.accentColor;
     });
-    // Restart animation from 0
     _rippleController.forward(from: 0.0);
   }
 
@@ -112,9 +142,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
   Future<void> _initRecorder() async {
     final status = await Permission.microphone.request();
     if (status != PermissionStatus.granted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Microphone permission denied')),
-      );
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AppLocalizations.of(context)!.micPermissionDenied)));
       return;
     }
     await _recorder.openRecorder();
@@ -126,47 +154,177 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
     setState(() => _isPlayerInitialized = true);
   }
 
+  Future<void> _initSTT() async {
+    try {
+      _sttInitialized = await _speechToText.initialize(
+        onStatus: (status) {
+          print('STT status: $status');
+          if (status == 'done' || status == 'notListening') {
+            if (mounted) setState(() => _isRecording = false);
+          }
+        },
+        onError: (e) {
+          print('STT error: ${e.errorMsg}');
+          if (mounted) setState(() => _aiText = 'STT Error: ${e.errorMsg}');
+        },
+      );
+      print('STT Available: $_sttInitialized');
+    } catch (e) {
+      print('STT Init Exception: $e');
+      _sttInitialized = false;
+    }
+  }
+
   Future<void> _startRecording() async {
-    if (!_isRecorderInitialized) return;
-    final dir = await getTemporaryDirectory();
-    _recordingPath = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav';
-    await _recorder.startRecorder(toFile: _recordingPath, codec: Codec.pcm16WAV);
-    setState(() {
-      _isRecording = true;
-      _userText = 'Recording...';
-    });
+    if (_isPlaying) await _player.stopPlayer();
+    
+    try {
+      // 1. Re-init only if fundamentally failed before
+      if (!_sttInitialized) {
+        await _initSTT();
+      }
+
+      // 2. Final check
+      if (_sttInitialized) {
+        setState(() {
+          _isRecording = true;
+          _aiText = AppLocalizations.of(context)!.listening;
+          _textController.clear();
+        });
+        
+        await _speechToText.listen(
+          onResult: (result) {
+            setState(() {
+              _textController.text = result.recognizedWords;
+              _aiText = result.recognizedWords;
+            });
+          },
+          localeId: Provider.of<ChatProvider>(context, listen: false).selectedLanguageCode == 'vi' ? 'vi_VN' : 'en_US',
+          listenMode: stt.ListenMode.dictation,
+          cancelOnError: true,
+          partialResults: true,
+        );
+      } else {
+        setState(() => _aiText = AppLocalizations.of(context)!.speechServiceNotReady);
+        // Try to trigger init again for next time
+        _initSTT();
+      }
+    } catch (e) {
+      print('Start Recording Exception: $e');
+      setState(() => _aiText = AppLocalizations.of(context)!.speechRecognitionFailed);
+    }
   }
 
   Future<void> _stopRecording() async {
     if (!_isRecording) return;
-    await _recorder.stopRecorder();
-    setState(() {
-      _isRecording = false;
-      _isLoading = true;
-      _userText = 'Processing...';
-    });
-    await _sendVoiceMessage('Hello from voice chat');
+    
+    await _speechToText.stop();
+    setState(() => _isRecording = false);
+    
+    if (_textController.text.isNotEmpty) {
+      _sendVoiceMessage(_textController.text);
+    } else {
+      setState(() => _aiText = AppLocalizations.of(context)!.noSpeechDetected);
+    }
   }
 
-  Future<void> _sendVoiceMessage(String text) async {
+  // --- AUDIO UPLOAD FOR DEBUGGING ---
+  Future<void> _pickAndSendAudio() async {
     try {
-      final response = await _chatService.sendVoiceMessage(
-        text,
-        _messages,
-        voice: 'Charon',
-        language: 'vi',
+      print('📂 Opening file picker...');
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.audio,
+        allowMultiple: false,
+        withData: true, // Crucial for Web
       );
+
+      if (result != null && result.files.single.bytes != null) {
+        final fileName = result.files.single.name;
+        final extension = fileName.split('.').last.toLowerCase();
+        
+        // Determine MIME
+        String mimeType = 'audio/$extension';
+        if (extension == 'mp3') mimeType = 'audio/mpeg';
+        if (extension == 'm4a') mimeType = 'audio/mp4';
+        if (extension == 'wav') mimeType = 'audio/wav';
+        if (extension == 'webm') mimeType = 'audio/webm;codecs=opus';
+        
+        final base64Audio = base64Encode(result.files.single.bytes!);
+        
+        print('📤 File picked: $fileName (${result.files.single.bytes!.length} bytes)');
+        if (mounted) {
+           final l10n = AppLocalizations.of(context)!;
+           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.uploading(fileName))));
+           setState(() {
+             _isLoading = true;
+             _aiText = l10n.uploading(fileName);
+           });
+        }
+        
+        await _sendVoiceMessage('User uploaded: $fileName', audioBase64: base64Audio, overrideMime: mimeType);
+      } else {
+        print('⚠️ No file picked or bytes empty');
+      }
+    } catch (e) {
+      print('❌ Pick Error: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error picking file: $e')));
+    }
+  }
+
+  // Handle Text/Audio Send
+  Future<void> _sendVoiceMessage(String text, {String? audioBase64, String? overrideMime}) async {
+    if (text.isEmpty && audioBase64 == null) return;
+    
+    setState(() {
+      _isLoading = true;
+      if (text.isNotEmpty) _aiText = AppLocalizations.of(context)!.thinking;
+    });
+    
+    // Clear Input
+    if (text.isNotEmpty) _textController.clear();
+
+    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+    final mimeType = overrideMime ?? (kIsWeb ? 'audio/webm' : 'audio/wav'); 
+
+    try {
+      print('🌐 Sending Voice Request to: ${_chatService.hashCode} across ${ApiConfig.chatUrl}');
+      print('📦 Payload: text length=${text.length}, audio size=${audioBase64?.length ?? 0} chars');
+      
+      final response = await _chatService.sendVoiceMessage(
+        text, // Empty string if audio is used
+        _messages,
+        voice: chatProvider.selectedVoice,
+        language: chatProvider.selectedLanguageCode,
+        voiceBase64: audioBase64,
+        mimeType: mimeType,
+      );
+      
+      if (!mounted) return;
+
       setState(() {
-        _userText = text;
-        _aiText = response['text'];
-        _messages.add(Message(role: 'user', text: text));
-        _messages.add(Message(role: 'model', text: response['text']));
+        final reply = response['text'] ?? (audioBase64 != null ? '[AI responded with audio - No text transcription]' : 'No response');
+        _aiText = reply;
+        _messages.add(Message(role: 'user', text: text.isNotEmpty ? text : '🎤 [Audio Message]'));
+        _messages.add(Message(role: 'model', text: reply));
         _isLoading = false;
+        
+        // Auto scroll to bottom
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
+        });
       });
+      
       if (response['audio'] != null) {
         await _playAudioResponse(response['audio']);
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _aiText = 'Error: $e';
         _isLoading = false;
@@ -175,41 +333,85 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
   }
 
   Future<void> _playAudioResponse(String base64Audio) async {
-    if (!_isPlayerInitialized) return;
     try {
       final bytes = base64Decode(base64Audio);
-      final dir = await getTemporaryDirectory();
-      final audioPath = '${dir.path}/response_${DateTime.now().millisecondsSinceEpoch}.wav';
-      final file = File(audioPath);
-      await file.writeAsBytes(bytes);
-
       setState(() => _isPlaying = true);
-      await _player.startPlayer(
-        fromURI: audioPath,
-        whenFinished: () {
-          setState(() => _isPlaying = false);
-          file.delete();
-        },
-      );
+      
+      if (kIsWeb) {
+        // Use HTML5 Audio for Web (flutter_sound doesn't work well on Web)
+        final audioHelper = getAudioHelper();
+        await audioHelper.playAudio(bytes);
+        
+        // Simulating playing state as we don't have easy callback without more complexity
+        // but it's better than crashing the build.
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _isPlaying = false);
+        });
+      } else {
+        // Mobile: Use flutter_sound
+        if (!_isPlayerInitialized) return;
+        final dir = await getTemporaryDirectory();
+        final audioPath = '${dir.path}/response_${DateTime.now().millisecondsSinceEpoch}.wav';
+        final file = File(audioPath);
+        await file.writeAsBytes(bytes);
+
+        await _player.startPlayer(
+          fromURI: audioPath,
+          whenFinished: () {
+            setState(() => _isPlaying = false);
+            file.delete();
+          },
+        );
+      }
     } catch (e) {
       setState(() => _isPlaying = false);
-      print('Error playing audio: $e');
+      print('Audio Play Error: $e');
     }
+  }
+
+  void _toggleTextInput() {
+    setState(() => _showTextInput = !_showTextInput);
   }
 
   @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context);
+    final chatProvider = Provider.of<ChatProvider>(context);
     final isLoggedIn = authProvider.isLoggedIn;
+    final l10n = AppLocalizations.of(context)!;
+
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('🎙️ Voice Chat', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
+        title: Text(l10n.appTitle, style: TextStyle(fontWeight: FontWeight.w600, color: currentTheme.textColor)),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
+        leading: PopupMenuButton<String>(
+          icon: Icon(Icons.tune, color: currentTheme.textColor),
+          offset: const Offset(0, 40),
+          color: currentTheme.cardColor,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          onSelected: (value) {
+            if (value == 'language')  _showLanguageModal(context, chatProvider);
+            else if (value == 'voice') _showVoiceModal(context, chatProvider);
+          },
+          itemBuilder: (context) => [
+            PopupMenuItem(value: 'language', 
+              child: Text(l10n.language, style: TextStyle(color: currentTheme.textColor))),
+            PopupMenuItem(value: 'voice', 
+              child: Text(l10n.voice, style: TextStyle(color: currentTheme.textColor))),
+          ],
+        ),
         actions: [
+            IconButton(
+                icon: Icon(Icons.refresh_rounded, color: currentTheme.textColor.withOpacity(0.7)),
+                tooltip: l10n.newChat,
+                onPressed: _newChat,
+            ),
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: isLoggedIn
@@ -217,6 +419,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
                     icon: const Icon(Icons.logout_rounded, color: Colors.redAccent),
                     onPressed: () async {
                       await authProvider.logout();
+                      _newChat();
                     },
                   )
                 : _buildGradientLoginButton(),
@@ -225,16 +428,18 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
       ),
       body: Stack(
         children: [
-          Container(color: const Color(0xFF0A0B11)),
+          Container(color: currentTheme.backgroundColor),
 
           AnimatedBuilder(
             animation: _waveController,
-            builder: (context, _) {
-              return CustomPaint(
-                painter: MinimalWavesPainter(_waveController.value),
-                size: Size.infinite,
-              );
-            },
+            builder: (context, _) => CustomPaint(
+              painter: MinimalWavesPainter(
+                _waveController.value,
+                currentTheme.primaryColor,
+                currentTheme.accentColor,
+              ),
+              size: Size.infinite,
+            ),
           ),
 
           GestureDetector(
@@ -244,36 +449,32 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
               children: [
                 AnimatedBuilder(
                   animation: _bgController,
-                  builder: (context, child) {
-                    return Container(
+                  builder: (context, child) => Container(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          stops: [0.0, 0.5, 1.0],
+                          stops: const [0.0, 0.5, 1.0],
                           colors: [
-                            const Color(0xFF0F1014).withOpacity(0.3),
-                            Color.lerp(const Color(0xFF1A1C23), const Color(0xFF252936), _bgController.value)!.withOpacity(0.2),
-                            const Color(0xFF0F1014).withOpacity(0.3),
+                            currentTheme.backgroundColor.withOpacity(0.8),
+                            Color.lerp(currentTheme.backgroundColor, currentTheme.cardColor, _bgController.value)!.withOpacity(0.6),
+                            currentTheme.backgroundColor.withOpacity(0.8),
                           ],
                         ),
                       ),
-                    );
-                  },
+                    ),
                 ),
 
                 AnimatedBuilder(
                   animation: _rippleController,
-                  builder: (context, _) {
-                    return CustomPaint(
+                  builder: (context, _) => CustomPaint(
                       painter: TouchRipplePainter(
                         _touchPosition,
                         _rippleController.value,
                         _touchColor,
                       ),
                       child: Container(),
-                    );
-                  },
+                    ),
                 ),
 
                 SafeArea(
@@ -281,9 +482,12 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
                     children: [
                       Expanded(
                         child: Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
+                          child: SingleChildScrollView(
+                            physics: const BouncingScrollPhysics(),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                              // MIC VISUALIZER
                               AnimatedBuilder(
                                 animation: _pulseController,
                                 builder: (context, child) {
@@ -293,15 +497,13 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
                                     height: 200 + pulse,
                                     decoration: BoxDecoration(
                                       shape: BoxShape.circle,
-                                      gradient: LinearGradient(
-                                        colors: _isRecording || _isPlaying
-                                            ? [const Color(0xFF667EEA), const Color(0xFF764BA2)]
-                                            : [Colors.grey.shade800, Colors.grey.shade700],
-                                      ),
+                                      gradient: (_isRecording || _isPlaying) 
+                                        ? currentTheme.gradient
+                                        : LinearGradient(colors: [currentTheme.cardColor, currentTheme.backgroundColor]),
                                       boxShadow: [
                                         BoxShadow(
-                                          color: (_isRecording || _isPlaying ? const Color(0xFF667EEA) : Colors.black)
-                                              .withOpacity(0.5),
+                                          color: (_isRecording || _isPlaying ? currentTheme.primaryColor : Colors.black)
+                                              .withOpacity(currentTheme.isDark ? 0.5 : 0.2),
                                           blurRadius: 30 + pulse,
                                           spreadRadius: 5 + (pulse / 2),
                                         ),
@@ -310,73 +512,138 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
                                     child: Icon(
                                       _isRecording ? Icons.mic : _isPlaying ? Icons.volume_up : Icons.mic_none,
                                       size: 80,
-                                      color: Colors.white,
+                                      color: (_isRecording || _isPlaying) ? Colors.white : currentTheme.textColor.withOpacity(0.7),
                                     ),
                                   );
                                 },
                               ),
                               const SizedBox(height: 50),
-                              if (_userText.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 32),
-                                  child: Text(_userText,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(color: Colors.white70, fontSize: 16)),
-                                ),
-                              const SizedBox(height: 20),
+                              
+                              // AI TEXT / STATUS
                               if (_aiText.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 32),
                                   child: Text(_aiText,
                                       textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                          color: Colors.white, fontSize: 18, fontWeight: FontWeight.w500)),
+                                      style: TextStyle(
+                                          color: currentTheme.textColor, 
+                                          fontSize: 18, 
+                                          fontWeight: FontWeight.w500,
+                                          fontStyle: _isLoading ? FontStyle.italic : FontStyle.normal,
+                                      )),
                                 ),
+                              
                               if (_isLoading)
-                                const Padding(
-                                  padding: EdgeInsets.only(top: 20),
-                                  child: CircularProgressIndicator(color: Color(0xFF667EEA)),
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 20),
+                                  child: Column(
+                                    children: [
+                                      CircularProgressIndicator(color: currentTheme.primaryColor),
+                                      const SizedBox(height: 8),
+                                      Text(l10n.thinking, style: TextStyle(color: currentTheme.secondaryTextColor, fontSize: 12)),
+                                    ],
+                                  ),
                                 ),
                             ],
-                          ),
-                        ),
-                      ),
-
-                      Container(
-                        padding: const EdgeInsets.all(32),
-                        child: GestureDetector(
-                          onLongPressStart: (_) => _startRecording(),
-                          onLongPressEnd: (_) => _stopRecording(),
-                          child: AnimatedScale(
-                            duration: const Duration(milliseconds: 200),
-                            scale: _isRecording ? 1.2 : 1.0,
-                            child: Container(
-                              width: 80,
-                              height: 80,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                gradient: LinearGradient(
-                                  colors: _isRecording
-                                      ? [Colors.red.shade400, Colors.red.shade600]
-                                      : [const Color(0xFF667EEA), const Color(0xFF764BA2)],
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: (_isRecording ? Colors.red : const Color(0xFF667EEA)).withOpacity(0.4),
-                                    blurRadius: 20,
-                                    spreadRadius: 5,
-                                  ),
-                                ],
-                              ),
-                              child: Icon(_isRecording ? Icons.stop : Icons.mic, size: 40, color: Colors.white),
                             ),
                           ),
                         ),
                       ),
+
+                      // --- CONTROLS ---
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 24),
-                        child: Text(_isRecording ? 'Release to send' : 'Hold to speak',
-                            style: const TextStyle(color: Colors.grey, fontSize: 14)),
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                                // TEXT INPUT FIELD (Toggleable)
+                                if (_showTextInput)
+                                    Padding(
+                                        padding: const EdgeInsets.only(bottom: 20),
+                                        child: Row(
+                                            children: [
+                                                Expanded(child: TextField(
+                                                    controller: _textController,
+                                                    style: TextStyle(color: currentTheme.textColor),
+                                                    decoration: InputDecoration(
+                                                        hintText: l10n.typeAMessage,
+                                                        hintStyle: TextStyle(color: currentTheme.secondaryTextColor),
+                                                        filled: true,
+                                                        fillColor: currentTheme.cardColor,
+                                                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none),
+                                                    ),
+                                                    onSubmitted: (val) => _sendVoiceMessage(val),
+                                                )),
+                                                const SizedBox(width: 8),
+                                                IconButton(
+                                                    icon: Icon(Icons.send, color: currentTheme.primaryColor),
+                                                    onPressed: () => _sendVoiceMessage(_textController.text),
+                                                ),
+                                            ],
+                                        ),
+                                    ),
+
+                                // MIC & TEXT TOGGLE
+                                Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                        // TEXT TOGGLE BTN
+                                        IconButton(
+                                            icon: Icon(_showTextInput ? Icons.keyboard_hide : Icons.keyboard, 
+                                              color: currentTheme.secondaryTextColor),
+                                            onPressed: _toggleTextInput,
+                                        ),
+                                        const SizedBox(width: 20),
+
+                                        // MIC BUTTON
+                                        GestureDetector(
+                                          onLongPressStart: (_) => _startRecording(),
+                                          onLongPressEnd: (_) => _stopRecording(),
+                                          onTap: () {
+                                             // Provide feedback for short tap
+                                             ScaffoldMessenger.of(context).showSnackBar(
+                                               SnackBar(content: Text(l10n.holdToSpeak), duration: const Duration(seconds: 1))
+                                             );
+                                          },
+                                          child: AnimatedScale(
+                                            duration: const Duration(milliseconds: 200),
+                                            scale: _isRecording ? 1.2 : 1.0,
+                                            child: Container(
+                                              width: 70,
+                                              height: 70,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                gradient: LinearGradient(
+                                                  colors: _isRecording
+                                                      ? [Colors.red.shade400, Colors.red.shade600]
+                                                      : currentTheme.gradient.colors,
+                                                ),
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: (_isRecording ? Colors.red : currentTheme.primaryColor).withOpacity(0.4),
+                                                    blurRadius: 15,
+                                                    spreadRadius: 4,
+                                                  ),
+                                                ],
+                                              ),
+                                              child: Icon(_isRecording ? Icons.mic : Icons.mic_none, size: 35, color: Colors.white),
+                                            ),
+                                          ),
+                                        ),
+                                        
+                                        const SizedBox(width: 20),
+                                         // UPLOAD BUTTON FOR DEBUGGING
+                                         IconButton(
+                                            icon: Icon(Icons.upload_file, color: currentTheme.secondaryTextColor),
+                                            onPressed: _pickAndSendAudio,
+                                         ),
+                                    ],
+                                ),
+                                const SizedBox(height: 10),
+                                Text(_isRecording ? l10n.releaseToSend : l10n.holdToSpeak, 
+                                  style: TextStyle(color: currentTheme.secondaryTextColor, fontSize: 12)),
+                            ],
+                        ),
                       ),
                     ],
                   ),
@@ -389,113 +656,109 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
     );
   }
 
-  // Nút Login với Premium Shimmer Effect
+  // --- Login Button helper ---
   Widget _buildGradientLoginButton() {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
     return AnimatedBuilder(
       animation: _shimmerController,
       builder: (context, _) {
-        final shimmerValue = _shimmerController.value;
-        final curvedValue = Curves.easeInOutCubic.transform(shimmerValue);
-        
+        final val = _shimmerController.value;
+        final l10n = AppLocalizations.of(context)!;
         return GestureDetector(
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => LoginScreen()),
-          ),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => LoginScreen())),
           child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 8),
-            height: 44,
-            width: 110,
+            height: 36, width: 90,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(30),
-              gradient: const LinearGradient(
-                colors: [Color(0xFF448AFF), Color(0xFFFF1744)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Color.lerp(
-                    const Color(0xFF448AFF),
-                    const Color(0xFFFF1744),
-                    shimmerValue,
-                  )!.withOpacity(0.5),
-                  blurRadius: 16,
-                  spreadRadius: 2,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              borderRadius: BorderRadius.circular(20),
+              gradient: currentTheme.gradient,
+              boxShadow: [BoxShadow(color: Color.lerp(currentTheme.primaryColor, currentTheme.accentColor, val)!.withOpacity(0.5), blurRadius: 10)],
             ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                // Shimmer Layer 1 (Primary wave)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Transform.translate(
-                    offset: Offset((curvedValue * 3.5 - 1.2) * 110, 0),
-                    child: Container(
-                      width: 70,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.white.withOpacity(0.0),
-                            Colors.white.withOpacity(0.6),
-                            Colors.white.withOpacity(0.0),
-                          ],
-                          stops: const [0.0, 0.5, 1.0],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                
-                // Shimmer Layer 2 (Secondary trailing wave)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(30),
-                  child: Transform.translate(
-                    offset: Offset((curvedValue * 3.5 - 1.5) * 110, 0),
-                    child: Container(
-                      width: 40,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Colors.white.withOpacity(0.0),
-                            Colors.white.withOpacity(0.3),
-                            Colors.white.withOpacity(0.0),
-                          ],
-                          stops: const [0.0, 0.5, 1.0],
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+            alignment: Alignment.center,
+            child: Text(l10n.login, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        );
+      },
+    );
+  }
 
-                // Text with shadow for better contrast
-                Text(
-                  'Login',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    letterSpacing: 1.0,
-                    shadows: [
-                      Shadow(
-                        color: Colors.black.withOpacity(0.3),
-                        offset: const Offset(0, 1),
-                        blurRadius: 2,
-                      ),
-                    ],
-                  ),
+  void _showLanguageModal(BuildContext context, ChatProvider provider) {
+    final currentTheme = Provider.of<ThemeProvider>(context, listen: false).currentTheme;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: currentTheme.backgroundColor,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        final l10n = AppLocalizations.of(context)!;
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(l10n.language, style: TextStyle(color: currentTheme.textColor, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: VoiceConfig.languages.length,
+                  itemBuilder: (context, index) {
+                    final lang = VoiceConfig.languages[index];
+                    final isSelected = provider.selectedLanguageCode == lang.code;
+                    return ListTile(
+                      leading: Text(lang.flag, style: const TextStyle(fontSize: 24)),
+                      title: Text(lang.name, style: TextStyle(color: isSelected ? currentTheme.primaryColor : currentTheme.textColor)),
+                      trailing: isSelected ? Icon(Icons.check, color: currentTheme.primaryColor) : null,
+                      onTap: () {
+                        provider.setLanguage(lang.code);
+                        Navigator.pop(context);
+                      },
+                    );
+                  },
                 ),
-              ],
-            ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showVoiceModal(BuildContext context, ChatProvider provider) {
+    final currentTheme = Provider.of<ThemeProvider>(context, listen: false).currentTheme;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: currentTheme.backgroundColor,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        final l10n = AppLocalizations.of(context)!;
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(l10n.voice, style: TextStyle(color: currentTheme.textColor, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: VoiceConfig.voices.length,
+                  itemBuilder: (context, index) {
+                    final voice = VoiceConfig.voices[index];
+                    final isSelected = provider.selectedVoice == voice.name;
+                    return ListTile(
+                      leading: Text(voice.icon, style: const TextStyle(fontSize: 24)),
+                      title: Text(voice.name, style: TextStyle(color: isSelected ? currentTheme.primaryColor : currentTheme.textColor)),
+                      subtitle: Text(voice.description, style: TextStyle(color: currentTheme.secondaryTextColor, fontSize: 12)),
+                      trailing: isSelected ? Icon(Icons.check, color: currentTheme.primaryColor) : null,
+                      onTap: () {
+                        provider.setVoice(voice.name);
+                        Navigator.pop(context);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         );
       },
@@ -511,10 +774,13 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> with TickerProviderSt
     _rippleController.dispose();
     _recorder.closeRecorder();
     _player.closePlayer();
+    _textController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 }
 
+// PAINTERS
 class TouchRipplePainter extends CustomPainter {
   final Offset position;
   final double opacity;
@@ -524,35 +790,28 @@ class TouchRipplePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Early return if animation is complete or just starting
     if (opacity <= 0 || opacity >= 0.95) return;
     
     final random = math.Random(baseColor.hashCode);
     
-    // Create multiple expanding ripple rings (water droplet effect)
     for (int i = 0; i < 8; i++) {
       final delay = i * 0.12;
       final progress = math.max(0.0, math.min(1.0, opacity - delay));
       
-      // Skip if this ring hasn't started or is complete
       if (progress <= 0 || progress >= 0.95) continue;
 
-      // Slower, linear expansion for realistic water ripple
       final maxRadius = math.min(size.width, size.height) * 0.8;
       final radius = 30 + (progress * maxRadius);
       
-      // Exponential fade-out for smooth disappearance
-      final fadeOut = math.pow(1 - progress, 2).toDouble(); // Squared for smoother fade
+      final fadeOut = math.pow(1 - progress, 2).toDouble();
       final ringOpacity = fadeOut * 0.35;
       
-      // Use the base color (blue or red) for all rings
       final ringColor = baseColor;
 
-      // Gradient fill for water effect (center brighter, edge fades)
       final gradient = RadialGradient(
         colors: [
-          ringColor.withOpacity(ringOpacity * 0.25), // Reduced from 0.5
-          ringColor.withOpacity(ringOpacity * 0.15), // Reduced from 0.3
+          ringColor.withOpacity(ringOpacity * 0.25),
+          ringColor.withOpacity(ringOpacity * 0.15),
           ringColor.withOpacity(0.0),
         ],
         stops: const [0.85, 0.95, 1.0],
@@ -563,11 +822,10 @@ class TouchRipplePainter extends CustomPainter {
       
       canvas.drawCircle(position, radius, paint);
 
-      // Stroke outline for wave definition (thinner and more transparent)
       final strokePaint = Paint()
-        ..color = ringColor.withOpacity(ringOpacity * 0.5) // Reduced from 0.9
+        ..color = ringColor.withOpacity(ringOpacity * 0.5)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5 + fadeOut * 1.5; // Thinner stroke
+        ..strokeWidth = 1.5 + fadeOut * 1.5;
 
       canvas.drawCircle(position, radius, strokePaint);
     }
@@ -582,33 +840,35 @@ class TouchRipplePainter extends CustomPainter {
 
 class MinimalWavesPainter extends CustomPainter {
   final double animationValue;
+  final Color primaryColor;
+  final Color accentColor;
 
-  MinimalWavesPainter(this.animationValue);
+  MinimalWavesPainter(this.animationValue, this.primaryColor, this.accentColor);
 
   @override
   void paint(Canvas canvas, Size size) {
     final paintBlue1 = Paint()
-      ..color = const Color(0xFF448AFF).withOpacity(0.25)
+      ..color = primaryColor.withOpacity(0.25)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5;
 
     final paintBlue2 = Paint()
-      ..color = const Color(0xFF448AFF).withOpacity(0.20)
+      ..color = primaryColor.withOpacity(0.20)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
 
     final paintBlue3 = Paint()
-      ..color = const Color(0xFF667EEA).withOpacity(0.18)
+      ..color = accentColor.withOpacity(0.18)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8;
 
     final paintRed1 = Paint()
-      ..color = const Color(0xFFFF1744).withOpacity(0.30)
+      ..color = accentColor.withOpacity(0.25)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
 
     final paintRed2 = Paint()
-      ..color = const Color(0xFFFF1744).withOpacity(0.22)
+      ..color = accentColor.withOpacity(0.22)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.8;
 
@@ -618,53 +878,20 @@ class MinimalWavesPainter extends CustomPainter {
     final pathRed1 = Path();
     final pathRed2 = Path();
 
-    final width = size.width;
-    final height = size.height;
-
-    // Diagonal wave 1 (Blue) - Top-left to bottom-right
-    pathBlue1.moveTo(0, height * 0.15);
-    for (double x = 0; x <= width; x += 5) {
-      final progress = x / width;
-      final yBase = height * 0.15 + progress * height * 0.5; // Diagonal baseline
-      final yWave = yBase + math.sin((progress * 2.0 * math.pi) + animationValue * 2 * math.pi) * 30;
-      pathBlue1.lineTo(x, yWave);
+    void drawWave(Path path, double phase, double amplitude, double frequency) {
+      path.moveTo(0, size.height / 2);
+      for (double x = 0; x <= size.width; x++) {
+        double y = size.height / 2 +
+            math.sin((x / size.width * 2 * math.pi * frequency) + (animationValue * 2 * math.pi) + phase) * amplitude;
+        path.lineTo(x, y);
+      }
     }
 
-    // Diagonal wave 2 (Blue) - Top to bottom
-    pathBlue2.moveTo(0, height * 0.25);
-    for (double x = 0; x <= width; x += 5) {
-      final progress = x / width;
-      final yBase = height * 0.25 + progress * height * 0.4;
-      final yWave = yBase + math.cos((progress * 2.5 * math.pi) - animationValue * 1.7 * math.pi) * 25;
-      pathBlue2.lineTo(x, yWave);
-    }
-
-    // Diagonal wave 3 (Blue) - Middle diagonal
-    pathBlue3.moveTo(0, height * 0.40);
-    for (double x = 0; x <= width; x += 5) {
-      final progress = x / width;
-      final yBase = height * 0.40 + progress * height * 0.3;
-      final yWave = yBase + math.sin((progress * 1.8 * math.pi) + animationValue * 2.3 * math.pi) * 22;
-      pathBlue3.lineTo(x, yWave);
-    }
-
-    // Diagonal wave 4 (Red) - Lower diagonal
-    pathRed1.moveTo(0, height * 0.60);
-    for (double x = 0; x <= width; x += 5) {
-      final progress = x / width;
-      final yBase = height * 0.60 + progress * height * 0.25;
-      final yWave = yBase + math.sin((progress * 1.5 * math.pi) + animationValue * 2.2 * math.pi) * 28;
-      pathRed1.lineTo(x, yWave);
-    }
-
-    // Diagonal wave 5 (Red) - Bottom diagonal
-    pathRed2.moveTo(0, height * 0.75);
-    for (double x = 0; x <= width; x += 5) {
-      final progress = x / width;
-      final yBase = height * 0.75 + progress * height * 0.15;
-      final yWave = yBase + math.cos((progress * 1.3 * math.pi) - animationValue * 1.9 * math.pi) * 24;
-      pathRed2.lineTo(x, yWave);
-    }
+    drawWave(pathBlue1, 0, 30, 1.0);
+    drawWave(pathBlue2, math.pi / 4, 25, 1.2);
+    drawWave(pathBlue3, math.pi / 2, 20, 1.5);
+    drawWave(pathRed1, math.pi, 28, 1.1);
+    drawWave(pathRed2, math.pi * 1.5, 22, 1.3);
 
     canvas.drawPath(pathBlue1, paintBlue1);
     canvas.drawPath(pathBlue2, paintBlue2);
@@ -674,6 +901,7 @@ class MinimalWavesPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant MinimalWavesPainter oldDelegate) =>
-      oldDelegate.animationValue != animationValue;
+  bool shouldRepaint(covariant MinimalWavesPainter oldDelegate) {
+    return oldDelegate.animationValue != animationValue;
+  }
 }

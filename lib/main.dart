@@ -4,12 +4,20 @@ import 'screens/voice_chat_screen.dart';
 import 'screens/text_chat_screen.dart';
 import 'screens/translate_screen.dart';
 import 'providers/auth_provider.dart';
+import 'providers/chat_provider.dart';
+import 'providers/theme_provider.dart';
+import 'providers/locale_provider.dart';
+import 'screens/settings_screen.dart';
+import 'package:lamp_flutter_app/l10n/app_localizations.dart';
 
 void main() {
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()),
+        ChangeNotifierProvider(create: (_) => ChatProvider()),
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => LocaleProvider()),
       ],
       child: const LampApp(),
     ),
@@ -21,22 +29,45 @@ class LampApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final localeProvider = Provider.of<LocaleProvider>(context);
+    final currentTheme = themeProvider.currentTheme;
+
     return MaterialApp(
-      title: 'Lamp AI',
+      title: 'BotCuaThuy',
       debugShowCheckedModeBanner: false,
+      locale: localeProvider.locale,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF1A1B1E),
-        primaryColor: const Color(0xFF667EEA),
-        colorScheme: ColorScheme.dark(
-          primary: const Color(0xFF667EEA),
-          secondary: const Color(0xFF764BA2),
-          surface: const Color(0xFF2D2F33),
-          background: const Color(0xFF1A1B1E),
-        ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF2D2F33),
+        brightness: currentTheme.isDark ? Brightness.dark : Brightness.light,
+        scaffoldBackgroundColor: currentTheme.backgroundColor,
+        primaryColor: currentTheme.primaryColor,
+        canvasColor: currentTheme.backgroundColor,
+        colorScheme: currentTheme.isDark 
+          ? ColorScheme.dark(
+              primary: currentTheme.primaryColor,
+              secondary: currentTheme.accentColor,
+              surface: currentTheme.cardColor,
+            )
+          : ColorScheme.light(
+              primary: currentTheme.primaryColor,
+              secondary: currentTheme.accentColor,
+              surface: currentTheme.cardColor,
+            ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: Colors.transparent,
           elevation: 0,
+          titleTextStyle: TextStyle(
+            color: currentTheme.textColor,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+          iconTheme: IconThemeData(color: currentTheme.textColor),
+        ),
+        textTheme: TextTheme(
+          bodyLarge: TextStyle(color: currentTheme.textColor),
+          bodyMedium: TextStyle(color: currentTheme.textColor),
         ),
       ),
       home: const HomeScreen(),
@@ -56,6 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
@@ -63,26 +95,32 @@ class _HomeScreenState extends State<HomeScreen> {
           VoiceChatScreen(),
           TextChatScreen(),
           TranslateScreen(),
+          SettingsScreen(),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
-        backgroundColor: const Color(0xFF2D2F33),
-        selectedItemColor: const Color(0xFF667EEA),
-        unselectedItemColor: Colors.grey,
-        items: const [
+        type: BottomNavigationBarType.fixed,
+        backgroundColor: Provider.of<ThemeProvider>(context).currentTheme.cardColor,
+        selectedItemColor: Provider.of<ThemeProvider>(context).currentTheme.primaryColor,
+        unselectedItemColor: Provider.of<ThemeProvider>(context).currentTheme.secondaryTextColor,
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.mic),
-            label: 'Voice',
+            icon: const Icon(Icons.mic),
+            label: l10n.voice,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.chat),
-            label: 'Text',
+            icon: const Icon(Icons.chat),
+            label: l10n.text,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.translate),
-            label: 'Translate',
+            icon: const Icon(Icons.translate),
+            label: l10n.translate,
+          ),
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.settings),
+            label: l10n.settingsTab,
           ),
         ],
       ),

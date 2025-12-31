@@ -23,6 +23,9 @@ class ChatService {
         }),
       );
 
+      print('📥 [ChatService] Response received: ${response.statusCode}');
+      print('📝 [ChatService] Body: ${response.body.substring(0, response.body.length > 200 ? 200 : response.body.length)}...');
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         return data['text'] ?? 'No response';
@@ -40,8 +43,11 @@ class ChatService {
     List<Message> history, {
     String voice = 'Charon',
     String language = 'vi',
+    String? voiceBase64,
+    String mimeType = 'audio/wav',
   }) async {
     try {
+      print('🚀 [ChatService] Calling POST ${ApiConfig.chatUrl}...');
       final response = await http.post(
         Uri.parse(ApiConfig.chatUrl),
         headers: {'Content-Type': 'application/json'},
@@ -50,8 +56,13 @@ class ChatService {
           'voice': voice,
           'language': language,
           'history': history.map((m) => m.toJson()).toList(),
+          if (voiceBase64 != null) 'audio': voiceBase64,
+          'mime_type': mimeType,
         }),
-      );
+      ).timeout(const Duration(seconds: 30));
+      
+      print('📥 [ChatService] Response received: ${response.statusCode}');
+      print('📝 [ChatService] Body: ${response.body.substring(0, response.body.length > 200 ? 200 : response.body.length)}...');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
